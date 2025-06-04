@@ -29,7 +29,7 @@ def show_logo():
 ██║╚██╗██║██╔══██║██╔═══╝ ██╔══╝  ██╔══╝  ██║╚████║
 ██║ ╚████║██║  ██║██║     ███████╗███████╗██║ ╚███║
 ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝╚═╝  ╚══╝
-            ⚔️ TOOL BY BROKEN NADEEM ⚔️
+           ⚔️ TOOL BY BROKEN NADEEM ⚔️
 """
     print(logo)
     time.sleep(1)
@@ -65,21 +65,22 @@ def log_message(convo_id, message):
 
 def send_real_message(token, convo_id, message):
     url = f"https://graph.facebook.com/v19.0/{convo_id}/messages"
-    payload = {
-        "messaging_type": "MESSAGE_TAG",
-        "tag": "CUSTOMER_FEEDBACK",
-        "message": {"text": message}
-    }
     headers = {
-        "Authorization": f"Bearer {token}"
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "message": {"text": message},
+        "messaging_type": "MESSAGE_TAG",
+        "tag": "POST_PURCHASE_UPDATE"
     }
     try:
-        res = requests.post(url, json=payload, headers=headers)
-        if res.status_code == 200:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
             animate(f"✅ SENT: {message}", 0.01)
             return True
         else:
-            animate(f"❌ FAIL: {res.status_code} - {res.text}", 0.01)
+            animate(f"❌ FAIL: {response.status_code} - {response.text}", 0.01)
             return False
     except Exception as e:
         animate(f"⚠️ ERROR: {e}", 0.01)
@@ -157,10 +158,11 @@ def show_messages():
 def main():
     while True:
         show_logo()
+        animate("ALL SCRIPT WORD ME ANIMATION ✅", 0.03)
         animate("Choose an option:", 0.03)
         animate("1. START LODER", 0.02)
         animate("2. STOP LODER", 0.02)
-        animate("3. SOW MESSAGE", 0.02)
+        animate("3. SHOW MESSAGE", 0.02)
         choice = input("📲 Enter choice (1/2/3): ")
 
         if choice == '1':
