@@ -173,7 +173,7 @@ def main():
             show_messages()
         else:
             animate("❌ Invalid choice.", 0.02)
-        input("\n🔁 Press Enter to continue...")
+        choice = input("📲 Enter choice (1/2/3): ")
 
 if __name__ == "__main__":
     main()
