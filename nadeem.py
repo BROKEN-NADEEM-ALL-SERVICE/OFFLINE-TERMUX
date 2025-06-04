@@ -1,176 +1,148 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-import time
-import threading
-import random
-import string
-import json
-import requests
 import sys
+import json
+import uuid
+import time
+import random
+import sqlite3
+import threading
+import subprocess
+from queue import Queue
 
-STOP_KEYS_FILE = 'stop_keys.json'
-MESSAGE_LOG_FILE = 'message_logs.json'
-active_threads = {}
+DB_PATH = "message_logs.db"
+QUEUE = Queue()
+SPAMMERS = {}
 
-def animate(text, delay=0.03):
-    for char in text:
-        sys.stdout.write(char)
+# === UTILITY FUNCTIONS ===
+def fancy_print_line(text):
+    for c in text:
+        sys.stdout.write(c)
         sys.stdout.flush()
-        time.sleep(delay)
+        time.sleep(0.01)
     print()
 
-def show_logo():
-    os.system('clear' if os.name != 'nt' else 'cls')
-    logo = r"""
-███╗   ██╗ █████╗ ██████╗ ███████╗███████╗███╗  ██╗
-████╗  ██║██╔══██╗██╔══██╗██╔════╝██╔════╝████╗ ██║
-██╔██╗ ██║███████║██████╔╝█████╗  █████╗  ██╔██╗██║
-██║╚██╗██║██╔══██║██╔═══╝ ██╔══╝  ██╔══╝  ██║╚████║
-██║ ╚████║██║  ██║██║     ███████╗███████╗██║ ╚███║
-╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝╚═╝  ╚══╝
-           ⚔️ TOOL BY BROKEN NADEEM ⚔️
-"""
-    print(logo)
-    time.sleep(1)
-
-def load_tokens(file_path):
-    with open(file_path, 'r') as f:
-        return [line.strip() for line in f if line.strip()]
-
-def load_messages(file_path):
-    with open(file_path, 'r') as f:
-        return [line.strip() for line in f if line.strip()]
-
 def generate_stop_key():
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=20))
+    return uuid.uuid4().hex[:20].upper()
 
-def save_stop_key(convo_id, stop_key, thread_id):
-    try:
-        data = json.load(open(STOP_KEYS_FILE))
-    except:
-        data = {}
-    data[stop_key] = {'convo_id': convo_id, 'thread_id': thread_id}
-    json.dump(data, open(STOP_KEYS_FILE, 'w'))
+# === DB SETUP ===
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        convo_id TEXT,
+                        token TEXT,
+                        message TEXT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                      )''')
+    conn.commit()
+    conn.close()
 
-def log_message(convo_id, message):
+# === GSM Fallback ===
+def send_sms_via_gsm(message):
     try:
-        data = json.load(open(MESSAGE_LOG_FILE))
-    except:
-        data = {}
-    if convo_id not in data:
-        data[convo_id] = []
-    data[convo_id].append(message)
-    json.dump(data, open(MESSAGE_LOG_FILE, 'w'))
-
-def send_real_message(token, convo_id, message):
-    url = "https://graph.facebook.com/v19.0/me/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_type": "RESPONSE",
-        "recipient": {"thread_key": convo_id},
-        "message": {"text": message}
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            animate(f"✅ SENT: {message}", 0.01)
-            return True
-        else:
-            animate(f"❌ FAIL {response.status_code}: {response.text}", 0.01)
-            return False
+        os.system(f"termux-sms-send -n +919999999999 '{message}'")
     except Exception as e:
-        animate(f"⚠️ ERROR: {e}", 0.01)
-        return False
+        print("[!] GSM Fallback failed:", e)
 
-def spammer(token_list, convo_id, messages, speed, hater_name, stop_key):
-    while True:
-        try:
-            with open(STOP_KEYS_FILE) as f:
-                stop_data = json.load(f)
-            if stop_key not in stop_data:
-                animate(f"🛑 STOP KEY {stop_key} DELETED. STOPPING SPAM.", 0.02)
+# === MESSAGE SENDER ===
+def spammer_thread(convo_id, token, message_lines, delay, stop_key):
+    while SPAMMERS.get(stop_key, True):
+        for msg in message_lines:
+            if not SPAMMERS.get(stop_key, True):
                 break
-        except:
-            break
+            try:
+                os.system(f"curl -s -X POST https://graph.facebook.com/v19.0/{convo_id}/messages?access_token={token} -F 'message={{\"text\":\"{msg}\"}}' > /dev/null")
+                log_message(convo_id, token, msg)
+                time.sleep(delay)
+            except Exception as e:
+                print("[!] Error sending message:", e)
+                send_sms_via_gsm(f"Failed: {msg}")
 
-        for token in token_list:
-            for msg in messages:
-                success = send_real_message(token, convo_id, msg)
-                if success:
-                    log_message(convo_id, f"{hater_name}: {msg}")
-                time.sleep(speed)
+# === LOGGING ===
+def log_message(convo_id, token, message):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO messages (convo_id, token, message) VALUES (?, ?, ?)", (convo_id, token, message))
+    conn.commit()
+    conn.close()
 
+# === MAIN FUNCTIONS ===
 def start_loder():
-    animate("\n🔓 STARTING LODER...", 0.04)
-    token_file = input("📁 Enter token file path: ")
-    hater_name = input("😈 Enter hater name: ")
-    convo_id = input("💬 Enter conversation ID (thread_key): ")
-    message_file = input("📝 Enter message file path: ")
-    speed = float(input("⏱️ Enter delay in seconds: "))
+    token_path = input("[?] Token File Path: ")
+    convo_id = input("[?] Conversation ID: ")
+    hater_name = input("[?] Hater Name: ")
+    message_file = input("[?] Message File Path: ")
+    delay = int(input("[?] Speed (seconds): "))
 
-    tokens = load_tokens(token_file)
-    messages = load_messages(message_file)
+    with open(token_path) as tf:
+        tokens = tf.read().splitlines()
+    with open(message_file) as mf:
+        message_lines = mf.read().splitlines()
+
     stop_key = generate_stop_key()
+    SPAMMERS[stop_key] = True
 
-    thread = threading.Thread(target=spammer, args=(tokens, convo_id, messages, speed, hater_name, stop_key))
-    thread.daemon = True
-    thread.start()
-    active_threads[stop_key] = thread
-    save_stop_key(convo_id, stop_key, thread.ident)
+    for token in tokens:
+        t = threading.Thread(target=spammer_thread, args=(convo_id, token, message_lines, delay, stop_key))
+        t.daemon = True
+        t.start()
 
-    animate(f"\n🚀 SPAM STARTED SUCCESSFULLY!", 0.03)
-    animate(f"🔑 YOUR STOP KEY: {stop_key}", 0.04)
+    print(f"\n[✓] STARTED | HATER: {hater_name} | STOP KEY: {stop_key}\n")
 
 def stop_loder():
-    animate("\n🛑 STOP LODER ACTIVATED", 0.04)
-    stop_key = input("🔑 Enter your STOP KEY: ")
-    try:
-        with open(STOP_KEYS_FILE) as f:
-            stop_keys = json.load(f)
-        if stop_key in stop_keys:
-            del stop_keys[stop_key]
-            json.dump(stop_keys, open(STOP_KEYS_FILE, 'w'))
-            animate("✅ STOPPED LODER for given STOP KEY.", 0.04)
-        else:
-            animate("❌ STOP KEY not found.", 0.04)
-    except:
-        animate("❌ No active STOP KEYS found.", 0.04)
+    stop_key = input("[?] Enter STOP KEY to terminate: ").strip().upper()
+    if stop_key in SPAMMERS:
+        SPAMMERS[stop_key] = False
+        print("[✓] Stopped successfully.")
+    else:
+        print("[!] Invalid STOP KEY.")
 
 def show_messages():
-    animate("\n📂 MESSAGE LOG VIEWER", 0.04)
-    convo_id = input("💬 Enter conversation ID to view messages: ")
-    try:
-        with open(MESSAGE_LOG_FILE) as f:
-            logs = json.load(f)
-        if convo_id in logs:
-            animate(f"\n📨 Messages for {convo_id}:\n", 0.02)
-            for m in logs[convo_id]:
-                animate(f"➤ {m}", 0.01)
-        else:
-            animate("❌ No messages found for this convo.", 0.04)
-    except:
-        animate("❌ No message log found.", 0.04)
+    convo_id = input("[?] Enter Conversation ID: ").strip()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT timestamp, message FROM messages WHERE convo_id = ? ORDER BY timestamp DESC", (convo_id,))
+    results = cursor.fetchall()
+    if results:
+        for ts, msg in results:
+            print(f"[{ts}] {msg}")
+    else:
+        print("[!] No messages found.")
+    conn.close()
 
-def main():
+# === UI MENU ===
+def menu():
+    os.system("clear")
+    fancy_print_line("\033[1;33m== BROKEN NADEEM OFFLINE SPAMMER ==\033[0m")
+    print("\n[1] START LODER")
+    print("[2] STOP LODER")
+    print("[3] SHOW MESSAGE")
+    print("[0] EXIT")
+
+    choice = input("\n[?] Select Option: ")
+    if choice == "1":
+        start_loder()
+    elif choice == "2":
+        stop_loder()
+    elif choice == "3":
+        show_messages()
+    elif choice == "0":
+        print("[✓] Exiting...")
+        sys.exit()
+    else:
+        print("[!] Invalid Choice.")
+
+# === DAEMON MAIN LOOP ===
+if __name__ == '__main__':
+    init_db()
     while True:
-        show_logo()
-        animate("ALL SCRIPT WORD ME ANIMATION ✅", 0.03)
-        animate("Choose an option:", 0.03)
-        animate("1. START LODER", 0.02)
-        animate("2. STOP LODER", 0.02)
-        animate("3. SHOW MESSAGE", 0.02)
-        choice = input("📲 Enter choice (1/2/3): ")
-
-        if choice == '1':
-            start_loder()
-        elif choice == '2':
-            stop_loder()
-        elif choice == '3':
-            show_messages()
-        else:
-            animate("❌ Invalid choice.", 0.02)
-
-if __name__ == "__main__":
-    main()
+        try:
+            menu()
+            input("\n[Press Enter to continue]")
+        except KeyboardInterrupt:
+            print("\n[!] Interrupted by user.")
+            sys.exit()
